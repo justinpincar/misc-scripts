@@ -1,0 +1,95 @@
+#!/bin/bash
+
+# Load RVM function
+[[ -s "$HOME/.rvm/scripts/rvm" ]] && . "$HOME/.rvm/scripts/rvm"
+
+ruby -v
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+fi
+
+if test "$(git diff --cached --name-only --diff-filter=A -z $against | LC_ALL=C tr -d '[ -~]\0')"
+then
+	echo "Error: Attempt to add a non-ascii file name."
+	exit 1
+fi
+
+flag=false
+
+#Files (not deleted) in the index
+files=$(git diff-index --name-status --cached HEAD | grep -v ^D | cut -c3-)
+if [ "$files" != "" ]
+then
+  for f in $files
+  do
+    # Only examine known text files
+    if [[ "$f" =~ [.](conf|css|erb|html|js|json|log|properties|rb|ru|txt|xml|yml)$ ]]
+    then
+      # Add a linebreak to the file if it doesn't have one
+      if [ "$(tail -c1 $f)" != '' ]
+      then
+        echo >> $f
+        git add $f
+      fi
+
+      # Remove trailing whitespace if it exists
+      if grep -q "[[:blank:]]$" $f
+      then
+        sed -i "" -e $'s/[[:blank:]]*$//g' $f
+        git add $f
+      fi
+    fi
+
+    if [[ "$f" =~ [.](js)$ ]]
+    then
+	added_lines="^\+"
+	errors=$(git diff --cached $f | grep -E "$added_lines" | grep -e "console\.")
+	if [[ -n $errors ]];
+	then
+	    echo "ERROR: Please do not use (console\.*), as it isn't supported in IE"
+	    flag=true
+	fi
+    fi
+
+    if [[ "$f" =~ [.](rb)$ ]]
+    then
+	added_lines="^\+"
+	errors=$(git diff --cached $f | grep -E "$added_lines" | grep -e "(if|while)\b.*[[:space:]]=[[:space:]]")
+	if [[ -n $errors ]];
+	then
+	    echo "ERROR: Please do not use (if/while lval = exp) syntax (file: $f)"
+	    flag=true
+	fi
+
+	# This causes issues on some versions of ruby.
+	# ruby -c $f
+	# if [[ $? != 0 ]]
+	# then
+        #     flag=true
+	# fi
+	
+	added_lines="^\+"
+	errors=$(git diff --cached $f | grep -E "$added_lines" | grep -E "debugger|ruby-debug")
+	if [[ -n $errors ]];
+	then
+	    echo "ERROR: Found illegal commands in $f"
+	    
+	    flag=true
+	fi
+    fi
+  done
+fi
+
+if $flag
+then
+    echo
+    echo "Please fix errors and try again."
+    echo
+    exit 1
+fi
+
+exec git diff-index --cached $against --
